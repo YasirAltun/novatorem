@@ -7,3 +7,5 @@
 # Pycache
 __pycache__
 .venv
+.vercel
+.env*
