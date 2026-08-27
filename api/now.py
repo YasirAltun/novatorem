@@ -8,11 +8,11 @@ a track is playing and hold a frozen wave otherwise (`wave` param overrides).
 """
 
 import os
-from dataclasses import asdict, is_dataclass
 from typing import Any
 
 from flask import Flask, Response, request
 
+from .playback import now_playing
 from .recent import (
     ACCENT,
     ART,
@@ -30,7 +30,7 @@ from .recent import (
     svg_response,
     truncate,
 )
-from .spotify import get_now_playing, is_configured
+from .spotify import is_configured
 
 app = Flask(__name__)
 
@@ -90,7 +90,7 @@ def build_now_svg(
 ) -> str:
     """Assemble the strip for the given normalized track."""
     text_color, muted = palette
-    playing = bool(track.get("is_playing"))
+    playing = bool(track.get("playing"))
     art_y = TOP + (ROW_H - ART) / 2
 
     # Text must stop before the wave starts (or the strip edge when wave=off).
@@ -99,7 +99,7 @@ def build_now_svg(
     title_chars = max(12, int((text_end - text_x) / 7.2))
     artist_chars = max(14, int((text_end - text_x) / 5.9))
 
-    art_b64 = fetch_art(track.get("album_art_url") or None)
+    art_b64 = fetch_art(track.get("art") or None)
     if art_b64:
         art = (
             '<clipPath id="nowart">'
@@ -130,8 +130,8 @@ def build_now_svg(
 </style>
 {card_rect(background, border, HEIGHT, width)}
 {art}
-<text class="t" x="{text_x}" y="{TOP + 19}">{escape_xml(truncate(track.get("track_name", "Unknown"), title_chars))}</text>
-<text class="a" x="{text_x}" y="{TOP + 34}">{escape_xml(truncate(track.get("artist_name", "Unknown"), artist_chars))}</text>
+<text class="t" x="{text_x}" y="{TOP + 19}">{escape_xml(truncate(track.get("track", "Unknown"), title_chars))}</text>
+<text class="a" x="{text_x}" y="{TOP + 34}">{escape_xml(truncate(track.get("artist", "Unknown"), artist_chars))}</text>
 {bars}
 </svg>"""
 
@@ -158,14 +158,9 @@ def now_widget(path: str) -> Response:
     width = max(240, min(WIDTH, width))
 
     try:
-        track = get_now_playing()
+        track = now_playing()
     except Exception as exc:  # surface the reason on the card itself
         return error_svg(f"Spotify error: {exc}", 502)
-
-    if is_dataclass(track):
-        track = asdict(track)
-    if not isinstance(track, dict):
-        return error_svg("Unexpected Spotify payload", 502)
 
     return svg_response(build_now_svg(track, background, border, palette, wave, width))
 

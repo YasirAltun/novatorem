@@ -10,13 +10,13 @@ slot at a time, fading out at the top edge.
 import os
 from base64 import b64encode
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
 from typing import Any, Optional
 
 import requests
 from flask import Flask, Response, request
 
-from .spotify import get_recent_tracks, is_configured
+from .playback import recent_list
+from .spotify import is_configured
 
 app = Flask(__name__)
 
@@ -105,16 +105,6 @@ def pick_palette(background: str, theme: Optional[str]) -> tuple[str, str]:
     return TEXT_ON_DARK, MUTED_ON_DARK
 
 
-def smallest_art(images: list[dict[str, Any]]) -> Optional[str]:
-    """Pick the smallest album art available; thumbnails keep the SVG light."""
-    if not images:
-        return None
-    sized = [i for i in images if i.get("width")]
-    if not sized:
-        return images[-1].get("url")
-    return min(sized, key=lambda i: i["width"]).get("url")
-
-
 def fetch_art(url: Optional[str]) -> Optional[str]:
     """Download album art and return it base64-encoded, or None on any failure."""
     if not url:
@@ -127,60 +117,13 @@ def fetch_art(url: Optional[str]) -> Optional[str]:
         return None
 
 
-def time_ago(played_at: Optional[str]) -> str:
-    """Render an ISO timestamp as a short relative age (e.g. '3h', '2d')."""
-    if not played_at:
-        return ""
-    try:
-        stamp = datetime.fromisoformat(played_at.replace("Z", "+00:00"))
-    except ValueError:
-        return ""
-    seconds = (datetime.now(timezone.utc) - stamp).total_seconds()
-    if seconds < 60:
-        return "now"
-    if seconds < 3600:
-        return f"{int(seconds // 60)}m"
-    if seconds < 86400:
-        return f"{int(seconds // 3600)}h"
-    if seconds < 604800:
-        return f"{int(seconds // 86400)}d"
-    return f"{int(seconds // 604800)}w"
-
-
 def collect_tracks(count: int) -> list[dict[str, Any]]:
-    """
-    Fetch recent plays and reduce them to `count` distinct tracks.
-
-    Spotify repeats a track every time it is played, so pull a wider window and
-    keep only the first (most recent) appearance of each one.
-    """
-    data = get_recent_tracks(limit=min(50, max(20, count * 4)))
-    seen: set[str] = set()
-    tracks: list[dict[str, Any]] = []
-
-    for item in data.get("items", []):
-        track = item.get("track") or {}
-        key = track.get("id") or track.get("name", "")
-        if not key or key in seen:
-            continue
-        seen.add(key)
-        album = track.get("album") or {}
-        tracks.append(
-            {
-                "name": track.get("name", "Unknown"),
-                "artist": ", ".join(a["name"] for a in track.get("artists", [])) or "Unknown",
-                "art_url": smallest_art(album.get("images") or []),
-                "ago": time_ago(item.get("played_at")),
-            }
-        )
-        if len(tracks) == count:
-            break
-
+    """Recent distinct tracks, each with its album art inlined as base64."""
+    tracks = recent_list(count)
     with ThreadPoolExecutor(max_workers=5) as pool:
-        arts = list(pool.map(lambda t: fetch_art(t["art_url"]), tracks))
+        arts = list(pool.map(lambda t: fetch_art(t["art"]), tracks))
     for track, art in zip(tracks, arts):
-        track["art"] = art
-
+        track["art_b64"] = art
     return tracks
 
 
@@ -194,14 +137,14 @@ def render_row(
     title_chars = max(16, TITLE_CHARS * width // WIDTH)
     artist_chars = max(18, ARTIST_CHARS * width // WIDTH)
 
-    if track.get("art"):
+    if track.get("art_b64"):
         art = (
             f'<clipPath id="{clip}">'
             f'<rect x="{PAD_X}" y="{art_y}" width="{ART}" height="{ART}" rx="4"/>'
             f"</clipPath>"
             f'<image x="{PAD_X}" y="{art_y}" width="{ART}" height="{ART}" '
             f'clip-path="url(#{clip})" preserveAspectRatio="xMidYMid slice" '
-            f'href="data:image/jpeg;base64,{track["art"]}"/>'
+            f'href="data:image/jpeg;base64,{track["art_b64"]}"/>'
         )
     else:
         art = (
@@ -213,7 +156,7 @@ def render_row(
     return (
         f"{art}"
         f'<text class="t" x="{text_x}" y="{top + 19}">'
-        f"{escape_xml(truncate(track['name'], title_chars))}</text>"
+        f"{escape_xml(truncate(track['track'], title_chars))}</text>"
         f'<text class="a" x="{text_x}" y="{top + 34}">'
         f"{escape_xml(truncate(track['artist'], artist_chars))}</text>"
         f'<text class="g" x="{width - PAD_X}" y="{top + 26}">'
@@ -359,10 +302,19 @@ def build_roller_svg(
 </svg>"""
 
 
+# The strips are embedded as images, so the browser must not hold its own copy
+# (it would pin one song until a hard reload) — but Vercel's edge should, since
+# nobody expects a README to be second-accurate. `stale-while-revalidate` means
+# a visitor after the TTL still gets an instant cached answer while the edge
+# refreshes behind them.
+SVG_CACHE = "public, max-age=0, s-maxage=60, stale-while-revalidate=600"
+
+
 def svg_response(markup: str, status: int = 200) -> Response:
-    """Wrap SVG markup in a no-cache response so GitHub always sees fresh plays."""
+    """Wrap SVG markup in an edge-cacheable response."""
     response = Response(markup, status=status, mimetype="image/svg+xml")
-    response.headers["Cache-Control"] = "s-maxage=1, stale-while-revalidate"
+    response.headers["Cache-Control"] = SVG_CACHE
+    response.headers["CDN-Cache-Control"] = SVG_CACHE
     return response
 
 
