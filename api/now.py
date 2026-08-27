@@ -38,27 +38,28 @@ TOP = 8  # headerless top padding, matching the ticker's show_header=false
 HEIGHT = TOP + ROW_H + BOTTOM_PAD  # 62, identical to the single-line ticker
 
 # Waveform band on the right: mirrored bars around the row's vertical centre.
-WAVE_BARS = 26
 WAVE_W = 3
 WAVE_GAP = 3
-WAVE_MAX_H = 26  # tallest bar, centred on the row midline
 # Hand-tuned height profile (tiled over the bars) so the frozen wave looks
 # like audio rather than noise.
 WAVE_PROFILE = (10, 16, 22, 14, 8, 18, 26, 20, 12, 24, 16, 9, 21)
 
-# Text must stop before the wave starts.
-WAVE_X0 = WIDTH - PAD_X - (WAVE_BARS * (WAVE_W + WAVE_GAP) - WAVE_GAP)
-STRIP_TITLE_CHARS = 32
-STRIP_ARTIST_CHARS = 36
+
+def wave_metrics(width: int) -> tuple[int, int]:
+    """Bar count and starting x for the band: roughly 30% of the strip width."""
+    bars = max(12, int(width * 0.3) // (WAVE_W + WAVE_GAP))
+    x0 = width - PAD_X - (bars * (WAVE_W + WAVE_GAP) - WAVE_GAP)
+    return bars, x0
 
 
-def wave_band(animated: bool, muted: str) -> tuple[str, str]:
+def wave_band(animated: bool, muted: str, width: int) -> tuple[str, str]:
     """Build the waveform rects and their CSS. Returns (markup, css)."""
+    bars_n, x0 = wave_metrics(width)
     mid = TOP + ROW_H / 2
     rects = []
-    for i in range(WAVE_BARS):
+    for i in range(bars_n):
         h = WAVE_PROFILE[i % len(WAVE_PROFILE)]
-        x = WAVE_X0 + i * (WAVE_W + WAVE_GAP)
+        x = x0 + i * (WAVE_W + WAVE_GAP)
         # Deterministic per-bar timing so the dance is desynced but stable.
         dur = 0.6 + ((i * 37) % 40) / 100  # 0.60s - 0.99s
         delay = ((i * 53) % 70) / 100  # 0.00s - 0.69s
@@ -80,12 +81,23 @@ def wave_band(animated: bool, muted: str) -> tuple[str, str]:
 
 
 def build_now_svg(
-    track: dict[str, Any], background: str, border: str, palette: tuple[str, str], wave: str
+    track: dict[str, Any],
+    background: str,
+    border: str,
+    palette: tuple[str, str],
+    wave: str,
+    width: int = WIDTH,
 ) -> str:
     """Assemble the strip for the given normalized track."""
     text_color, muted = palette
     playing = bool(track.get("is_playing"))
     art_y = TOP + (ROW_H - ART) / 2
+
+    # Text must stop before the wave starts (or the strip edge when wave=off).
+    text_x = PAD_X + ART + 12
+    text_end = wave_metrics(width)[1] - 10 if wave != "off" else width - PAD_X
+    title_chars = max(12, int((text_end - text_x) / 7.2))
+    artist_chars = max(14, int((text_end - text_x) / 5.9))
 
     art_b64 = fetch_art(track.get("album_art_url") or None)
     if art_b64:
@@ -107,20 +119,19 @@ def build_now_svg(
         bars, wave_css = "", ""
     else:
         animated = playing if wave == "auto" else True
-        bars, wave_css = wave_band(animated, muted)
+        bars, wave_css = wave_band(animated, muted, width)
 
-    text_x = PAD_X + ART + 12
-    return f"""<svg viewBox="0 0 {WIDTH} {HEIGHT}" preserveAspectRatio="xMidYMid meet"
- style="width: 100%; height: auto; display: block; max-width: {WIDTH}px;"
+    return f"""<svg viewBox="0 0 {width} {HEIGHT}" preserveAspectRatio="xMidYMid meet"
+ style="width: 100%; height: auto; display: block; max-width: {width}px;"
  xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
 <style>
 {base_styles(text_color, muted)}
 {wave_css}
 </style>
-{card_rect(background, border, HEIGHT)}
+{card_rect(background, border, HEIGHT, width)}
 {art}
-<text class="t" x="{text_x}" y="{TOP + 19}">{escape_xml(truncate(track.get("track_name", "Unknown"), STRIP_TITLE_CHARS))}</text>
-<text class="a" x="{text_x}" y="{TOP + 34}">{escape_xml(truncate(track.get("artist_name", "Unknown"), STRIP_ARTIST_CHARS))}</text>
+<text class="t" x="{text_x}" y="{TOP + 19}">{escape_xml(truncate(track.get("track_name", "Unknown"), title_chars))}</text>
+<text class="a" x="{text_x}" y="{TOP + 34}">{escape_xml(truncate(track.get("artist_name", "Unknown"), artist_chars))}</text>
 {bars}
 </svg>"""
 
@@ -141,6 +152,12 @@ def now_widget(path: str) -> Response:
         wave = "auto"
 
     try:
+        width = int(request.args.get("width", WIDTH))
+    except ValueError:
+        width = WIDTH
+    width = max(300, min(WIDTH, width))
+
+    try:
         track = get_now_playing()
     except Exception as exc:  # surface the reason on the card itself
         return error_svg(f"Spotify error: {exc}", 502)
@@ -150,7 +167,7 @@ def now_widget(path: str) -> Response:
     if not isinstance(track, dict):
         return error_svg("Unexpected Spotify payload", 502)
 
-    return svg_response(build_now_svg(track, background, border, palette, wave))
+    return svg_response(build_now_svg(track, background, border, palette, wave, width))
 
 
 if __name__ == "__main__":

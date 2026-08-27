@@ -184,10 +184,15 @@ def collect_tracks(count: int) -> list[dict[str, Any]]:
     return tracks
 
 
-def render_row(track: dict[str, Any], index: int, top: float, muted: str) -> str:
+def render_row(
+    track: dict[str, Any], index: int, top: float, muted: str, width: int = WIDTH
+) -> str:
     """Render one track row (album art, title, artist, age) at a vertical offset."""
     art_y = top + (ROW_H - ART) / 2
     clip = f"art{index}"
+    # Narrower cards get proportionally shorter text before the age column.
+    title_chars = max(16, TITLE_CHARS * width // WIDTH)
+    artist_chars = max(18, ARTIST_CHARS * width // WIDTH)
 
     if track.get("art"):
         art = (
@@ -208,21 +213,21 @@ def render_row(track: dict[str, Any], index: int, top: float, muted: str) -> str
     return (
         f"{art}"
         f'<text class="t" x="{text_x}" y="{top + 19}">'
-        f"{escape_xml(truncate(track['name'], TITLE_CHARS))}</text>"
+        f"{escape_xml(truncate(track['name'], title_chars))}</text>"
         f'<text class="a" x="{text_x}" y="{top + 34}">'
-        f"{escape_xml(truncate(track['artist'], ARTIST_CHARS))}</text>"
-        f'<text class="g" x="{WIDTH - PAD_X}" y="{top + 26}">'
+        f"{escape_xml(truncate(track['artist'], artist_chars))}</text>"
+        f'<text class="g" x="{width - PAD_X}" y="{top + 26}">'
         f"{escape_xml(track['ago'])}</text>"
     )
 
 
-def render_header(show_header: bool, muted: str) -> str:
+def render_header(show_header: bool, muted: str, width: int = WIDTH) -> str:
     """Render the shared 'Recently played' header line, or nothing."""
     if not show_header:
         return ""
     return (
         f'<text class="h" x="{PAD_X}" y="20">Recently played</text>'
-        f'<circle cx="{WIDTH - PAD_X - 4}" cy="15" r="4" fill="{ACCENT}"/>'
+        f'<circle cx="{width - PAD_X - 4}" cy="15" r="4" fill="{ACCENT}"/>'
     )
 
 
@@ -237,12 +242,12 @@ def base_styles(text_color: str, muted: str) -> str:
     )
 
 
-def card_rect(background: str, border: str, height: int) -> str:
+def card_rect(background: str, border: str, height: int, width: int = WIDTH) -> str:
     """The card surface, or nothing when both fill and border are off."""
     if background == "none" and border == "none":
         return ""
     return (
-        f'<rect x="0.5" y="0.5" width="{WIDTH - 1}" height="{height - 1}" rx="6" '
+        f'<rect x="0.5" y="0.5" width="{width - 1}" height="{height - 1}" rx="6" '
         f'fill="{background}" stroke="{border}"/>'
     )
 
@@ -253,6 +258,7 @@ def build_svg(
     border: str,
     show_header: bool,
     palette: tuple[str, str],
+    width: int = WIDTH,
 ) -> str:
     """Assemble the static list variant."""
     text_color, muted = palette
@@ -260,18 +266,18 @@ def build_svg(
     height = header_h + len(tracks) * ROW_H + BOTTOM_PAD
 
     rows = [
-        render_row(track, index, header_h + index * ROW_H, muted)
+        render_row(track, index, header_h + index * ROW_H, muted, width)
         for index, track in enumerate(tracks)
     ]
 
-    return f"""<svg viewBox="0 0 {WIDTH} {height}" preserveAspectRatio="xMidYMid meet"
- style="width: 100%; height: auto; display: block; max-width: {WIDTH}px;"
+    return f"""<svg viewBox="0 0 {width} {height}" preserveAspectRatio="xMidYMid meet"
+ style="width: 100%; height: auto; display: block; max-width: {width}px;"
  xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
 <style>
 {base_styles(text_color, muted)}
 </style>
-{card_rect(background, border, height)}
-{render_header(show_header, muted)}
+{card_rect(background, border, height, width)}
+{render_header(show_header, muted, width)}
 {"".join(rows)}
 </svg>"""
 
@@ -283,6 +289,7 @@ def build_roller_svg(
     show_header: bool,
     palette: tuple[str, str],
     visible: int,
+    width: int = WIDTH,
 ) -> str:
     """
     Assemble the roller variant: the full track set climbs one row at a time
@@ -297,7 +304,7 @@ def build_roller_svg(
     # frame is pixel-identical to its first and the wrap is invisible.
     sequence = tracks + tracks[:visible]
     rows = [
-        render_row(track, index, header_h + index * ROW_H, muted)
+        render_row(track, index, header_h + index * ROW_H, muted, width)
         for index, track in enumerate(sequence)
     ]
 
@@ -320,8 +327,8 @@ def build_roller_svg(
     # travel inside the gradient, which reads as depth rather than clipping.
     fade = 0.3 if visible == 1 else 0.14
 
-    return f"""<svg viewBox="0 0 {WIDTH} {height}" preserveAspectRatio="xMidYMid meet"
- style="width: 100%; height: auto; display: block; max-width: {WIDTH}px;"
+    return f"""<svg viewBox="0 0 {width} {height}" preserveAspectRatio="xMidYMid meet"
+ style="width: 100%; height: auto; display: block; max-width: {width}px;"
  xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
 <style>
 {base_styles(text_color, muted)}
@@ -331,8 +338,8 @@ def build_roller_svg(
 }}
 @media (prefers-reduced-motion: reduce) {{ .roller {{ animation: none; }} }}
 </style>
-{card_rect(background, border, height)}
-{render_header(show_header, muted)}
+{card_rect(background, border, height, width)}
+{render_header(show_header, muted, width)}
 <defs>
 <linearGradient id="rollfade" x1="0" y1="0" x2="0" y2="1">
 <stop offset="0" stop-color="#fff" stop-opacity="0"/>
@@ -341,7 +348,7 @@ def build_roller_svg(
 <stop offset="1" stop-color="#fff" stop-opacity="0"/>
 </linearGradient>
 <mask id="rollwin">
-<rect x="0" y="{header_h}" width="{WIDTH}" height="{window_h}" fill="url(#rollfade)"/>
+<rect x="0" y="{header_h}" width="{width}" height="{window_h}" fill="url(#rollfade)"/>
 </mask>
 </defs>
 <g mask="url(#rollwin)">
@@ -390,6 +397,12 @@ def recent_widget(path: str) -> Response:
     palette = pick_palette(background, request.args.get("theme"))
 
     try:
+        width = int(request.args.get("width", WIDTH))
+    except ValueError:
+        width = WIDTH
+    width = max(300, min(WIDTH, width))
+
+    try:
         tracks = collect_tracks(count)
     except Exception as exc:  # surface the reason on the card itself
         return error_svg(f"Spotify error: {exc}", 502)
@@ -405,10 +418,10 @@ def recent_widget(path: str) -> Response:
         visible = max(1, min(len(tracks), visible))
         if len(tracks) > visible:
             return svg_response(
-                build_roller_svg(tracks, background, border, show_header, palette, visible)
+                build_roller_svg(tracks, background, border, show_header, palette, visible, width)
             )
 
-    return svg_response(build_svg(tracks, background, border, show_header, palette))
+    return svg_response(build_svg(tracks, background, border, show_header, palette, width))
 
 
 if __name__ == "__main__":
