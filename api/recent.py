@@ -29,9 +29,12 @@ BOTTOM_PAD = 10
 DEFAULT_COUNT = 5
 MAX_COUNT = 10
 
-TEXT = "#e6edf3"
-MUTED = "#8b949e"
 ACCENT = "#1db954"
+
+# Text pairs for dark and light backgrounds, picked per-request by luminance so
+# the card stays readable whatever background_color the caller asks for.
+TEXT_ON_DARK, MUTED_ON_DARK = "#e6edf3", "#8b949e"
+TEXT_ON_LIGHT, MUTED_ON_LIGHT = "#1f2328", "#57606a"
 
 # Widest strings that fit before the played-at column, in characters.
 TITLE_CHARS = 38
@@ -63,6 +66,20 @@ def clean_hex(value: Optional[str], fallback: str) -> str:
     if len(value) in (3, 6) and all(c in "0123456789abcdefABCDEF" for c in value):
         return "#" + value
     return fallback
+
+
+def is_light(hex_color: str) -> bool:
+    """
+    Report whether a #rrggbb / #rgb colour reads as light.
+
+    Uses the WCAG relative-luminance weighting rather than a plain average, so
+    mid-tone greens aren't mistaken for dark backgrounds.
+    """
+    value = hex_color.lstrip("#")
+    if len(value) == 3:
+        value = "".join(c * 2 for c in value)
+    r, g, b = (int(value[i : i + 2], 16) / 255 for i in (0, 2, 4))
+    return (0.2126 * r + 0.7152 * g + 0.0722 * b) > 0.5
 
 
 def smallest_art(images: list[dict[str, Any]]) -> Optional[str]:
@@ -146,6 +163,9 @@ def collect_tracks(count: int) -> list[dict[str, Any]]:
 
 def build_svg(tracks: list[dict[str, Any]], background: str, border: str, show_header: bool) -> str:
     """Assemble the finished SVG document for the given tracks."""
+    text_color, muted = (
+        (TEXT_ON_LIGHT, MUTED_ON_LIGHT) if is_light(background) else (TEXT_ON_DARK, MUTED_ON_DARK)
+    )
     header_h = HEADER_H if show_header else 8
     height = header_h + len(tracks) * ROW_H + BOTTOM_PAD
 
@@ -167,7 +187,7 @@ def build_svg(tracks: list[dict[str, Any]], background: str, border: str, show_h
         else:
             art = (
                 f'<rect x="{PAD_X}" y="{art_y}" width="{ART}" height="{ART}" rx="4" '
-                f'fill="{MUTED}" fill-opacity="0.25"/>'
+                f'fill="{muted}" fill-opacity="0.25"/>'
             )
 
         text_x = PAD_X + ART + 12
@@ -193,10 +213,10 @@ def build_svg(tracks: list[dict[str, Any]], background: str, border: str, show_h
  xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
 <style>
 text {{ font-family: 'Segoe UI', Ubuntu, Sans-Serif; }}
-.h {{ font-size: 12px; font-weight: 600; fill: {MUTED}; letter-spacing: .5px; }}
-.t {{ font-size: 13px; font-weight: 600; fill: {TEXT}; }}
-.a {{ font-size: 11px; fill: {MUTED}; }}
-.g {{ font-size: 10px; fill: {MUTED}; text-anchor: end; }}
+.h {{ font-size: 12px; font-weight: 600; fill: {muted}; letter-spacing: .5px; }}
+.t {{ font-size: 13px; font-weight: 600; fill: {text_color}; }}
+.a {{ font-size: 11px; fill: {muted}; }}
+.g {{ font-size: 10px; fill: {muted}; text-anchor: end; }}
 </style>
 <rect x="0.5" y="0.5" width="{WIDTH - 1}" height="{height - 1}" rx="6"
  fill="{background}" stroke="{border}"/>
