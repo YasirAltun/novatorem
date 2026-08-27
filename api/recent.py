@@ -400,7 +400,7 @@ def recent_widget(path: str) -> Response:
         width = int(request.args.get("width", WIDTH))
     except ValueError:
         width = WIDTH
-    width = max(300, min(WIDTH, width))
+    width = max(240, min(WIDTH, width))
 
     try:
         tracks = collect_tracks(count)
