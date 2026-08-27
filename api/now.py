@@ -3,8 +3,8 @@ Single-line now-playing strip.
 
 Same 540x62 anatomy as the recent-tracks ticker in recent.py (art, title,
 artist, transparent-capable surface), so the two sit side by side at identical
-heights. The right edge carries four EQ bars that animate while a track is
-actually playing and sit dimmed when the shown track is a recent play.
+heights. The right half carries a waveform band: mirrored bars that dance while
+a track is playing and hold a frozen wave otherwise (`wave` param overrides).
 """
 
 import os
@@ -16,11 +16,9 @@ from flask import Flask, Response, request
 from .recent import (
     ACCENT,
     ART,
-    ARTIST_CHARS,
     BOTTOM_PAD,
     PAD_X,
     ROW_H,
-    TITLE_CHARS,
     WIDTH,
     base_styles,
     card_rect,
@@ -39,13 +37,50 @@ app = Flask(__name__)
 TOP = 8  # headerless top padding, matching the ticker's show_header=false
 HEIGHT = TOP + ROW_H + BOTTOM_PAD  # 62, identical to the single-line ticker
 
-# The EQ indicator: four bars, slightly desynced so the motion reads as audio.
-EQ_BARS = ((0.9, 0.00), (0.7, 0.20), (1.1, 0.45), (0.8, 0.10))
-EQ_W, EQ_GAP, EQ_H = 4, 2, 16
+# Waveform band on the right: mirrored bars around the row's vertical centre.
+WAVE_BARS = 26
+WAVE_W = 3
+WAVE_GAP = 3
+WAVE_MAX_H = 26  # tallest bar, centred on the row midline
+# Hand-tuned height profile (tiled over the bars) so the frozen wave looks
+# like audio rather than noise.
+WAVE_PROFILE = (10, 16, 22, 14, 8, 18, 26, 20, 12, 24, 16, 9, 21)
+
+# Text must stop before the wave starts.
+WAVE_X0 = WIDTH - PAD_X - (WAVE_BARS * (WAVE_W + WAVE_GAP) - WAVE_GAP)
+STRIP_TITLE_CHARS = 32
+STRIP_ARTIST_CHARS = 36
+
+
+def wave_band(animated: bool, muted: str) -> tuple[str, str]:
+    """Build the waveform rects and their CSS. Returns (markup, css)."""
+    mid = TOP + ROW_H / 2
+    rects = []
+    for i in range(WAVE_BARS):
+        h = WAVE_PROFILE[i % len(WAVE_PROFILE)]
+        x = WAVE_X0 + i * (WAVE_W + WAVE_GAP)
+        # Deterministic per-bar timing so the dance is desynced but stable.
+        dur = 0.6 + ((i * 37) % 40) / 100  # 0.60s - 0.99s
+        delay = ((i * 53) % 70) / 100  # 0.00s - 0.69s
+        style = f' style="animation-duration:{dur:.2f}s;animation-delay:-{delay:.2f}s"' if animated else ""
+        rects.append(
+            f'<rect class="w" x="{x}" y="{mid - h / 2}" width="{WAVE_W}" height="{h}" rx="1.5"{style}/>'
+        )
+
+    if animated:
+        css = (
+            f".w {{ fill: {ACCENT}; transform-box: fill-box; transform-origin: 50% 50%; "
+            "animation: wavep 0.8s ease-in-out infinite alternate; }\n"
+            "@keyframes wavep { from { transform: scaleY(0.3); } to { transform: scaleY(1); } }\n"
+            "@media (prefers-reduced-motion: reduce) { .w { animation: none; } }"
+        )
+    else:
+        css = f".w {{ fill: {muted}; opacity: 0.4; }}"
+    return "".join(rects), css
 
 
 def build_now_svg(
-    track: dict[str, Any], background: str, border: str, palette: tuple[str, str]
+    track: dict[str, Any], background: str, border: str, palette: tuple[str, str], wave: str
 ) -> str:
     """Assemble the strip for the given normalized track."""
     text_color, muted = palette
@@ -68,31 +103,11 @@ def build_now_svg(
             f'fill="{muted}" fill-opacity="0.25"/>'
         )
 
-    eq_x = WIDTH - PAD_X - (len(EQ_BARS) * (EQ_W + EQ_GAP) - EQ_GAP)
-    eq_y = TOP + (ROW_H - EQ_H) / 2
-    bars = "".join(
-        f'<rect class="eq eq{i}" x="{eq_x + i * (EQ_W + EQ_GAP)}" y="{eq_y}" '
-        f'width="{EQ_W}" height="{EQ_H}" rx="1"/>'
-        for i in range(len(EQ_BARS))
-    )
-
-    if playing:
-        eq_css = "\n".join(
-            [
-                f".eq {{ fill: {ACCENT}; transform-box: fill-box; transform-origin: 50% 100%; "
-                "animation: eqp 0.9s ease-in-out infinite alternate; }"
-            ]
-            + [
-                f".eq{i} {{ animation-duration: {dur}s; animation-delay: -{delay}s; }}"
-                for i, (dur, delay) in enumerate(EQ_BARS)
-            ]
-            + [
-                "@keyframes eqp { from { transform: scaleY(0.25); } to { transform: scaleY(1); } }",
-                "@media (prefers-reduced-motion: reduce) { .eq { animation: none; } }",
-            ]
-        )
+    if wave == "off":
+        bars, wave_css = "", ""
     else:
-        eq_css = f".eq {{ fill: {muted}; opacity: 0.35; }}"
+        animated = playing if wave == "auto" else True
+        bars, wave_css = wave_band(animated, muted)
 
     text_x = PAD_X + ART + 12
     return f"""<svg viewBox="0 0 {WIDTH} {HEIGHT}" preserveAspectRatio="xMidYMid meet"
@@ -100,12 +115,12 @@ def build_now_svg(
  xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
 <style>
 {base_styles(text_color, muted)}
-{eq_css}
+{wave_css}
 </style>
 {card_rect(background, border, HEIGHT)}
 {art}
-<text class="t" x="{text_x}" y="{TOP + 19}">{escape_xml(truncate(track.get("track_name", "Unknown"), TITLE_CHARS))}</text>
-<text class="a" x="{text_x}" y="{TOP + 34}">{escape_xml(truncate(track.get("artist_name", "Unknown"), ARTIST_CHARS))}</text>
+<text class="t" x="{text_x}" y="{TOP + 19}">{escape_xml(truncate(track.get("track_name", "Unknown"), STRIP_TITLE_CHARS))}</text>
+<text class="a" x="{text_x}" y="{TOP + 34}">{escape_xml(truncate(track.get("artist_name", "Unknown"), STRIP_ARTIST_CHARS))}</text>
 {bars}
 </svg>"""
 
@@ -121,6 +136,10 @@ def now_widget(path: str) -> Response:
     border = clean_hex(request.args.get("border_color"), "#ffffff")
     palette = pick_palette(background, request.args.get("theme"))
 
+    wave = request.args.get("wave", "auto").lower()
+    if wave not in ("auto", "on", "off"):
+        wave = "auto"
+
     try:
         track = get_now_playing()
     except Exception as exc:  # surface the reason on the card itself
@@ -131,7 +150,7 @@ def now_widget(path: str) -> Response:
     if not isinstance(track, dict):
         return error_svg("Unexpected Spotify payload", 502)
 
-    return svg_response(build_now_svg(track, background, border, palette))
+    return svg_response(build_now_svg(track, background, border, palette, wave))
 
 
 if __name__ == "__main__":
