@@ -3,6 +3,8 @@ Recently played tracks widget.
 
 Renders the last N tracks played on Spotify as a compact SVG list, sized to sit
 directly beneath the now-playing card from orchestrator.py (same 540px width).
+`mode=roller` swaps the static list for an animated window where rows climb one
+slot at a time, fading out at the top edge.
 """
 
 import os
@@ -161,67 +163,152 @@ def collect_tracks(count: int) -> list[dict[str, Any]]:
     return tracks
 
 
+def render_row(track: dict[str, Any], index: int, top: float, muted: str) -> str:
+    """Render one track row (album art, title, artist, age) at a vertical offset."""
+    art_y = top + (ROW_H - ART) / 2
+    clip = f"art{index}"
+
+    if track.get("art"):
+        art = (
+            f'<clipPath id="{clip}">'
+            f'<rect x="{PAD_X}" y="{art_y}" width="{ART}" height="{ART}" rx="4"/>'
+            f"</clipPath>"
+            f'<image x="{PAD_X}" y="{art_y}" width="{ART}" height="{ART}" '
+            f'clip-path="url(#{clip})" preserveAspectRatio="xMidYMid slice" '
+            f'href="data:image/jpeg;base64,{track["art"]}"/>'
+        )
+    else:
+        art = (
+            f'<rect x="{PAD_X}" y="{art_y}" width="{ART}" height="{ART}" rx="4" '
+            f'fill="{muted}" fill-opacity="0.25"/>'
+        )
+
+    text_x = PAD_X + ART + 12
+    return (
+        f"{art}"
+        f'<text class="t" x="{text_x}" y="{top + 19}">'
+        f"{escape_xml(truncate(track['name'], TITLE_CHARS))}</text>"
+        f'<text class="a" x="{text_x}" y="{top + 34}">'
+        f"{escape_xml(truncate(track['artist'], ARTIST_CHARS))}</text>"
+        f'<text class="g" x="{WIDTH - PAD_X}" y="{top + 26}">'
+        f"{escape_xml(track['ago'])}</text>"
+    )
+
+
+def render_header(show_header: bool, muted: str) -> str:
+    """Render the shared 'Recently played' header line, or nothing."""
+    if not show_header:
+        return ""
+    return (
+        f'<text class="h" x="{PAD_X}" y="20">Recently played</text>'
+        f'<circle cx="{WIDTH - PAD_X - 4}" cy="15" r="4" fill="{ACCENT}"/>'
+    )
+
+
+def base_styles(text_color: str, muted: str) -> str:
+    """Shared <style> rules for both the static and roller variants."""
+    return (
+        "text { font-family: 'Segoe UI', Ubuntu, Sans-Serif; }\n"
+        f".h {{ font-size: 12px; font-weight: 600; fill: {muted}; letter-spacing: .5px; }}\n"
+        f".t {{ font-size: 13px; font-weight: 600; fill: {text_color}; }}\n"
+        f".a {{ font-size: 11px; fill: {muted}; }}\n"
+        f".g {{ font-size: 10px; fill: {muted}; text-anchor: end; }}"
+    )
+
+
 def build_svg(tracks: list[dict[str, Any]], background: str, border: str, show_header: bool) -> str:
-    """Assemble the finished SVG document for the given tracks."""
+    """Assemble the static list variant."""
     text_color, muted = (
         (TEXT_ON_LIGHT, MUTED_ON_LIGHT) if is_light(background) else (TEXT_ON_DARK, MUTED_ON_DARK)
     )
     header_h = HEADER_H if show_header else 8
     height = header_h + len(tracks) * ROW_H + BOTTOM_PAD
 
-    rows: list[str] = []
-    for index, track in enumerate(tracks):
-        top = header_h + index * ROW_H
-        art_y = top + (ROW_H - ART) / 2
-        clip = f"art{index}"
-
-        if track.get("art"):
-            art = (
-                f'<clipPath id="{clip}">'
-                f'<rect x="{PAD_X}" y="{art_y}" width="{ART}" height="{ART}" rx="4"/>'
-                f"</clipPath>"
-                f'<image x="{PAD_X}" y="{art_y}" width="{ART}" height="{ART}" '
-                f'clip-path="url(#{clip})" preserveAspectRatio="xMidYMid slice" '
-                f'href="data:image/jpeg;base64,{track["art"]}"/>'
-            )
-        else:
-            art = (
-                f'<rect x="{PAD_X}" y="{art_y}" width="{ART}" height="{ART}" rx="4" '
-                f'fill="{muted}" fill-opacity="0.25"/>'
-            )
-
-        text_x = PAD_X + ART + 12
-        rows.append(
-            f"{art}"
-            f'<text class="t" x="{text_x}" y="{top + 19}">'
-            f"{escape_xml(truncate(track['name'], TITLE_CHARS))}</text>"
-            f'<text class="a" x="{text_x}" y="{top + 34}">'
-            f"{escape_xml(truncate(track['artist'], ARTIST_CHARS))}</text>"
-            f'<text class="g" x="{WIDTH - PAD_X}" y="{top + 26}">'
-            f"{escape_xml(track['ago'])}</text>"
-        )
-
-    header = (
-        f'<text class="h" x="{PAD_X}" y="20">Recently played</text>'
-        f'<circle cx="{WIDTH - PAD_X - 4}" cy="15" r="4" fill="{ACCENT}"/>'
-        if show_header
-        else ""
-    )
+    rows = [
+        render_row(track, index, header_h + index * ROW_H, muted)
+        for index, track in enumerate(tracks)
+    ]
 
     return f"""<svg viewBox="0 0 {WIDTH} {height}" preserveAspectRatio="xMidYMid meet"
  style="width: 100%; height: auto; display: block; max-width: {WIDTH}px;"
  xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
 <style>
-text {{ font-family: 'Segoe UI', Ubuntu, Sans-Serif; }}
-.h {{ font-size: 12px; font-weight: 600; fill: {muted}; letter-spacing: .5px; }}
-.t {{ font-size: 13px; font-weight: 600; fill: {text_color}; }}
-.a {{ font-size: 11px; fill: {muted}; }}
-.g {{ font-size: 10px; fill: {muted}; text-anchor: end; }}
+{base_styles(text_color, muted)}
 </style>
 <rect x="0.5" y="0.5" width="{WIDTH - 1}" height="{height - 1}" rx="6"
  fill="{background}" stroke="{border}"/>
-{header}
+{render_header(show_header, muted)}
 {"".join(rows)}
+</svg>"""
+
+
+def build_roller_svg(
+    tracks: list[dict[str, Any]], background: str, border: str, show_header: bool, visible: int
+) -> str:
+    """
+    Assemble the roller variant: the full track set climbs one row at a time
+    through a window of `visible` rows, fading at the top and bottom edges.
+    """
+    text_color, muted = (
+        (TEXT_ON_LIGHT, MUTED_ON_LIGHT) if is_light(background) else (TEXT_ON_DARK, MUTED_ON_DARK)
+    )
+    header_h = HEADER_H if show_header else 8
+    window_h = visible * ROW_H
+    height = header_h + window_h + BOTTOM_PAD
+
+    # Repeat the first `visible` rows after the real set so the loop's final
+    # frame is pixel-identical to its first and the wrap is invisible.
+    sequence = tracks + tracks[:visible]
+    rows = [
+        render_row(track, index, header_h + index * ROW_H, muted)
+        for index, track in enumerate(sequence)
+    ]
+
+    # Stepped keyframes: hold each position, then ease one row upward.
+    total = len(tracks)
+    step = 100.0 / total
+    frames = []
+    for i in range(total):
+        y = -(i * ROW_H)
+        frames.append(f"  {i * step:.3f}% {{ transform: translateY({y}px); }}")
+        frames.append(
+            f"  {i * step + step * 0.82:.3f}% {{ transform: translateY({y}px); "
+            "animation-timing-function: cubic-bezier(0.45, 0, 0.2, 1); }"
+        )
+    frames.append(f"  100% {{ transform: translateY({-total * ROW_H}px); }}")
+    keyframes = "\n".join(frames)
+    duration = round(total * 3.2, 1)
+
+    return f"""<svg viewBox="0 0 {WIDTH} {height}" preserveAspectRatio="xMidYMid meet"
+ style="width: 100%; height: auto; display: block; max-width: {WIDTH}px;"
+ xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<style>
+{base_styles(text_color, muted)}
+.roller {{ animation: roll {duration}s linear infinite; }}
+@keyframes roll {{
+{keyframes}
+}}
+@media (prefers-reduced-motion: reduce) {{ .roller {{ animation: none; }} }}
+</style>
+<rect x="0.5" y="0.5" width="{WIDTH - 1}" height="{height - 1}" rx="6"
+ fill="{background}" stroke="{border}"/>
+{render_header(show_header, muted)}
+<defs>
+<linearGradient id="rollfade" x1="0" y1="0" x2="0" y2="1">
+<stop offset="0" stop-color="#fff" stop-opacity="0"/>
+<stop offset="0.14" stop-color="#fff"/>
+<stop offset="0.86" stop-color="#fff"/>
+<stop offset="1" stop-color="#fff" stop-opacity="0"/>
+</linearGradient>
+<mask id="rollwin">
+<rect x="0" y="{header_h}" width="{WIDTH}" height="{window_h}" fill="url(#rollfade)"/>
+</mask>
+</defs>
+<g mask="url(#rollwin)">
+<g class="roller">
+{"".join(rows)}
+</g>
+</g>
 </svg>"""
 
 
@@ -268,6 +355,15 @@ def recent_widget(path: str) -> Response:
 
     if not tracks:
         return error_svg("No recently played tracks", 200)
+
+    if request.args.get("mode", "list").lower() == "roller":
+        try:
+            visible = int(request.args.get("visible", 3))
+        except ValueError:
+            visible = 3
+        visible = max(1, min(len(tracks), visible))
+        if len(tracks) > visible:
+            return svg_response(build_roller_svg(tracks, background, border, show_header, visible))
 
     return svg_response(build_svg(tracks, background, border, show_header))
 
