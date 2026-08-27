@@ -28,8 +28,12 @@ DEFAULT_RECENT = 5
 MAX_RECENT = 10
 
 # Far shorter than the SVG's 60s: the payload is tiny, and this is the surface
-# where being a minute behind would actually show.
-FEED_CACHE = "public, max-age=0, s-maxage=10, stale-while-revalidate=60"
+# where being a minute behind would actually show. `stale-if-error` matters
+# more than it looks — if Spotify rate-limits or falls over, the edge keeps
+# serving the last good answer instead of every visitor seeing an error.
+FEED_CACHE = (
+    "public, max-age=0, s-maxage=4, stale-while-revalidate=8, stale-if-error=600"
+)
 
 
 def json_response(payload: dict[str, Any], status: int = 200) -> Response:
@@ -50,7 +54,15 @@ def json_response(payload: dict[str, Any], status: int = 200) -> Response:
 @app.route("/", defaults={"path": ""}, methods=["GET", "OPTIONS"])
 @app.route("/<path:path>", methods=["GET", "OPTIONS"])
 def feed(path: str) -> Response:
-    """Return the current track and the recent history in one request."""
+    """
+    Return the current track, and the recent history when asked for it.
+
+    History costs a second Spotify call but only changes when a track ends, so
+    clients poll with `count=0` and ask for it again only when the current
+    track changes. That keeps the hot path at one upstream call, which is what
+    keeps us clear of Spotify's rate limit when several edge locations are
+    refreshing at once.
+    """
     if request.method == "OPTIONS":
         return json_response({})
 
