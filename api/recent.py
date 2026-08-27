@@ -61,9 +61,15 @@ def truncate(text: str, limit: int) -> str:
 
 
 def clean_hex(value: Optional[str], fallback: str) -> str:
-    """Accept a bare or #-prefixed hex colour, falling back when malformed."""
+    """
+    Accept a bare or #-prefixed hex colour, falling back when malformed.
+    'transparent' / 'none' turn the surface off entirely.
+    """
     if not value:
         return fallback
+    value = value.strip()
+    if value.lower() in ("transparent", "none"):
+        return "none"
     value = value.lstrip("#").strip()
     if len(value) in (3, 6) and all(c in "0123456789abcdefABCDEF" for c in value):
         return "#" + value
@@ -82,6 +88,21 @@ def is_light(hex_color: str) -> bool:
         value = "".join(c * 2 for c in value)
     r, g, b = (int(value[i : i + 2], 16) / 255 for i in (0, 2, 4))
     return (0.2126 * r + 0.7152 * g + 0.0722 * b) > 0.5
+
+
+def pick_palette(background: str, theme: Optional[str]) -> tuple[str, str]:
+    """
+    Choose (text, muted) colours. A hex background decides by luminance; a
+    transparent one can't, so the optional `theme` query param decides instead
+    (dark surroundings assumed by default, as on a GitHub dark profile).
+    """
+    if background == "none":
+        if (theme or "dark").lower() == "light":
+            return TEXT_ON_LIGHT, MUTED_ON_LIGHT
+        return TEXT_ON_DARK, MUTED_ON_DARK
+    if is_light(background):
+        return TEXT_ON_LIGHT, MUTED_ON_LIGHT
+    return TEXT_ON_DARK, MUTED_ON_DARK
 
 
 def smallest_art(images: list[dict[str, Any]]) -> Optional[str]:
@@ -216,11 +237,25 @@ def base_styles(text_color: str, muted: str) -> str:
     )
 
 
-def build_svg(tracks: list[dict[str, Any]], background: str, border: str, show_header: bool) -> str:
-    """Assemble the static list variant."""
-    text_color, muted = (
-        (TEXT_ON_LIGHT, MUTED_ON_LIGHT) if is_light(background) else (TEXT_ON_DARK, MUTED_ON_DARK)
+def card_rect(background: str, border: str, height: int) -> str:
+    """The card surface, or nothing when both fill and border are off."""
+    if background == "none" and border == "none":
+        return ""
+    return (
+        f'<rect x="0.5" y="0.5" width="{WIDTH - 1}" height="{height - 1}" rx="6" '
+        f'fill="{background}" stroke="{border}"/>'
     )
+
+
+def build_svg(
+    tracks: list[dict[str, Any]],
+    background: str,
+    border: str,
+    show_header: bool,
+    palette: tuple[str, str],
+) -> str:
+    """Assemble the static list variant."""
+    text_color, muted = palette
     header_h = HEADER_H if show_header else 8
     height = header_h + len(tracks) * ROW_H + BOTTOM_PAD
 
@@ -235,23 +270,25 @@ def build_svg(tracks: list[dict[str, Any]], background: str, border: str, show_h
 <style>
 {base_styles(text_color, muted)}
 </style>
-<rect x="0.5" y="0.5" width="{WIDTH - 1}" height="{height - 1}" rx="6"
- fill="{background}" stroke="{border}"/>
+{card_rect(background, border, height)}
 {render_header(show_header, muted)}
 {"".join(rows)}
 </svg>"""
 
 
 def build_roller_svg(
-    tracks: list[dict[str, Any]], background: str, border: str, show_header: bool, visible: int
+    tracks: list[dict[str, Any]],
+    background: str,
+    border: str,
+    show_header: bool,
+    palette: tuple[str, str],
+    visible: int,
 ) -> str:
     """
     Assemble the roller variant: the full track set climbs one row at a time
     through a window of `visible` rows, fading at the top and bottom edges.
     """
-    text_color, muted = (
-        (TEXT_ON_LIGHT, MUTED_ON_LIGHT) if is_light(background) else (TEXT_ON_DARK, MUTED_ON_DARK)
-    )
+    text_color, muted = palette
     header_h = HEADER_H if show_header else 8
     window_h = visible * ROW_H
     height = header_h + window_h + BOTTOM_PAD
@@ -279,6 +316,10 @@ def build_roller_svg(
     keyframes = "\n".join(frames)
     duration = round(total * 3.2, 1)
 
+    # A single-row ticker gets a stronger edge fade: the row spends more of its
+    # travel inside the gradient, which reads as depth rather than clipping.
+    fade = 0.3 if visible == 1 else 0.14
+
     return f"""<svg viewBox="0 0 {WIDTH} {height}" preserveAspectRatio="xMidYMid meet"
  style="width: 100%; height: auto; display: block; max-width: {WIDTH}px;"
  xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
@@ -290,14 +331,13 @@ def build_roller_svg(
 }}
 @media (prefers-reduced-motion: reduce) {{ .roller {{ animation: none; }} }}
 </style>
-<rect x="0.5" y="0.5" width="{WIDTH - 1}" height="{height - 1}" rx="6"
- fill="{background}" stroke="{border}"/>
+{card_rect(background, border, height)}
 {render_header(show_header, muted)}
 <defs>
 <linearGradient id="rollfade" x1="0" y1="0" x2="0" y2="1">
 <stop offset="0" stop-color="#fff" stop-opacity="0"/>
-<stop offset="0.14" stop-color="#fff"/>
-<stop offset="0.86" stop-color="#fff"/>
+<stop offset="{fade}" stop-color="#fff"/>
+<stop offset="{1 - fade}" stop-color="#fff"/>
 <stop offset="1" stop-color="#fff" stop-opacity="0"/>
 </linearGradient>
 <mask id="rollwin">
@@ -347,6 +387,7 @@ def recent_widget(path: str) -> Response:
     background = clean_hex(request.args.get("background_color"), "#0d1117")
     border = clean_hex(request.args.get("border_color"), "#ffffff")
     show_header = request.args.get("show_header", "true").lower() != "false"
+    palette = pick_palette(background, request.args.get("theme"))
 
     try:
         tracks = collect_tracks(count)
@@ -363,9 +404,11 @@ def recent_widget(path: str) -> Response:
             visible = 3
         visible = max(1, min(len(tracks), visible))
         if len(tracks) > visible:
-            return svg_response(build_roller_svg(tracks, background, border, show_header, visible))
+            return svg_response(
+                build_roller_svg(tracks, background, border, show_header, palette, visible)
+            )
 
-    return svg_response(build_svg(tracks, background, border, show_header))
+    return svg_response(build_svg(tracks, background, border, show_header, palette))
 
 
 if __name__ == "__main__":
